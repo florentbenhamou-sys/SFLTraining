@@ -11,6 +11,8 @@ export function todayISO() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+export const labelOf = iso => { const d = new Date(iso + 'T12:00:00'); return `${JOURS[d.getDay()]} ${d.getDate()} ${MOISL[d.getMonth()]}`; };
+
 export function kind(a) {
   const t = (a.type || '').toLowerCase(), d = (a.dominante || '').toLowerCase(), ti = (a.titre || '').toLowerCase();
   let type = 'Exercice';

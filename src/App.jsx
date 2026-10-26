@@ -1,5 +1,5 @@
 import React from 'react';
-import { JOURS, MOISL, cap, todayISO, kind, seqOf, effOf, fmtSeq, mmss, dateParts, libKey } from './logic.js';
+import { cap, labelOf, todayISO, kind, seqOf, effOf, fmtSeq, mmss, dateParts, libKey } from './logic.js';
 import * as I from './Icons.jsx';
 
 // Timer settings (were design-time "Tweaks" in the prototype).
@@ -7,17 +7,20 @@ const RECUP = 60;           // seconds of recovery between séquences
 const BEEP = true;          // beeps on the last 3 seconds and on phase changes
 const LIVE_SCHEMA = true;   // show the field diagram during the timer
 const STORE = 'training-sfl-imports';
+// Local edits on top of seances.json + imports: { patches: { [id]: { date, label, theme, ateliers } }, deleted: [id] }
+const EDITS = 'training-sfl-edits';
 
 const INK = '#f2f2f3', DARK = '#1d2d3d', LIGHT = '#f2f2f3';
 const kickerS = { font: '500 11px var(--font-body)', letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--color-accent-700)' };
 const smallCapsS = { font: '500 10px var(--font-body)', letterSpacing: '.1em', textTransform: 'uppercase' };
 const ghostBtnS = { alignSelf: 'flex-start', height: 44, marginLeft: -6, fontSize: 16, gap: 2 };
 const importBtnS = { height: 44, fontSize: 15, textTransform: 'uppercase', letterSpacing: '.05em', gap: 8, flex: 'none' };
+const editBtnS = { height: 48, fontSize: 15, textTransform: 'uppercase', letterSpacing: '.05em' };
 const bigBtnS = { height: 56, fontSize: 19, textTransform: 'uppercase', letterSpacing: '.06em', gap: 10 };
 const liveIconBtnS = { width: 60, height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: '1px solid rgba(242,242,243,.25)', color: INK, cursor: 'pointer', padding: 0, flex: 'none' };
 
 export default class App extends React.Component {
-  state = { data: null, tab: 'today', stack: [], filter: 'Tous', q: '', live: null, imp: null };
+  state = { data: null, tab: 'today', stack: [], filter: 'Tous', q: '', live: null, imp: null, edit: null };
   scrollRef = React.createRef();
   fileRef = React.createRef();
   today = todayISO();
@@ -26,7 +29,9 @@ export default class App extends React.Component {
   componentDidMount() {
     fetch('seances.json').then(r => r.json()).then(data => {
       let extra = []; try { extra = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch (e) {}
-      this.setState({ data: [...data, ...extra].sort((a, b) => a.date.localeCompare(b.date)) });
+      const ed = this.loadEdits();
+      const all = [...data, ...extra].filter(s => !ed.deleted.includes(s.id)).map(s => ed.patches[s.id] ? { ...s, ...ed.patches[s.id] } : s);
+      this.setState({ data: all.sort((a, b) => a.date.localeCompare(b.date)) });
     });
     this.timer = setInterval(() => this.tick(), 250);
     this.onVis = () => { if (document.visibilityState === 'visible') { this.today = todayISO(); this.syncWakeLock(); } };
@@ -96,12 +101,48 @@ export default class App extends React.Component {
     const im = this.state.imp, data = this.state.data;
     const ateliers = im.ateliers.filter((_, i) => im.keep[i]);
     if (!ateliers.length || !im.date) return;
-    const d = new Date(im.date + 'T12:00:00');
-    let id = im.date; while (data.some(s => s.id === id)) id += 'b';
-    const S = { id, date: im.date, label: `${JOURS[d.getDay()]} ${d.getDate()} ${MOISL[d.getMonth()]}`, theme: im.theme || 'Nouvelle séance', ateliers, imported: true };
+    const deleted = this.loadEdits().deleted;
+    let id = im.date; while (data.some(s => s.id === id) || deleted.includes(id)) id += 'b';
+    const S = { id, date: im.date, label: labelOf(im.date), theme: im.theme || 'Nouvelle séance', ateliers, imported: true };
     const next = [...data, S].sort((a, b) => a.date.localeCompare(b.date));
     try { const prev = JSON.parse(localStorage.getItem(STORE) || '[]'); localStorage.setItem(STORE, JSON.stringify([...prev, S])); } catch (e) {}
     this.setState({ data: next, imp: null, tab: 'list', stack: [{ v: 'seance', sid: id }] });
+  }
+
+  // ── edit / delete ──
+  loadEdits() {
+    try { const e = JSON.parse(localStorage.getItem(EDITS) || '{}'); return { patches: e.patches || {}, deleted: e.deleted || [] }; }
+    catch (e) { return { patches: {}, deleted: [] }; }
+  }
+  saveEdits(e) { try { localStorage.setItem(EDITS, JSON.stringify(e)); } catch (err) {} }
+  openEdit(sid) {
+    const S = this.session(sid);
+    this.setState(s => ({ edit: { sid, date: S.date, theme: S.theme, ateliers: S.ateliers, keep: S.ateliers.map(() => true) }, stack: [...s.stack, { v: 'edit', sid }] }));
+  }
+  moveAtelier(i, dir) {
+    this.setState(s => {
+      const e = s.edit, j = i + dir;
+      if (j < 0 || j >= e.ateliers.length) return null;
+      const swap = arr => { const a = [...arr]; [a[i], a[j]] = [a[j], a[i]]; return a; };
+      return { edit: { ...e, ateliers: swap(e.ateliers), keep: swap(e.keep) } };
+    });
+  }
+  saveEdit() {
+    const e = this.state.edit, ateliers = e.ateliers.filter((_, i) => e.keep[i]);
+    if (!ateliers.length || !e.date) return;
+    const patch = { date: e.date, label: labelOf(e.date), theme: e.theme.trim() || 'Séance', ateliers };
+    const ed = this.loadEdits(); ed.patches[e.sid] = patch; this.saveEdits(ed);
+    this.setState(s => ({
+      data: s.data.map(x => x.id === e.sid ? { ...x, ...patch } : x).sort((a, b) => a.date.localeCompare(b.date)),
+      edit: null, stack: s.stack.filter(x => x.v !== 'edit'),
+    }));
+  }
+  deleteSession(sid) {
+    const S = this.session(sid);
+    if (!S || !window.confirm(`Supprimer la séance « ${S.label} · ${S.theme} » ?\nCette action est définitive sur ce téléphone.`)) return;
+    const ed = this.loadEdits(); delete ed.patches[sid]; if (!ed.deleted.includes(sid)) ed.deleted.push(sid); this.saveEdits(ed);
+    try { const imp = JSON.parse(localStorage.getItem(STORE) || '[]'); localStorage.setItem(STORE, JSON.stringify(imp.filter(x => x.id !== sid))); } catch (e) {}
+    this.setState(s => ({ data: s.data.filter(x => x.id !== sid), edit: null, tab: 'list', stack: [] }));
   }
 
   // ── live timer ──
@@ -202,6 +243,7 @@ export default class App extends React.Component {
       start: () => this.startLive(id, 0),
       hasNext: !showBack && !!nextS, nextLabel: nextS ? nextS.label : '', nextTheme: nextS ? nextS.theme : '',
       openNext: () => nextS && this.push({ v: 'seance', sid: nextS.id }),
+      edit: () => this.openEdit(id), remove: () => this.deleteSession(id),
     };
   }
 
@@ -250,6 +292,27 @@ export default class App extends React.Component {
       onDate: e => { const v = e.target.value; this.setState(s => ({ imp: { ...s.imp, date: v } })); },
       onTheme: e => { const v = e.target.value; this.setState(s => ({ imp: { ...s.imp, theme: v } })); },
       cancel: () => this.setState(s => ({ imp: null, stack: s.stack.filter(x => x.v !== 'import') })) };
+  }
+
+  editVals() {
+    const e = this.state.edit;
+    const rows = e.ateliers.map((a, i) => {
+      const kd = kind(a);
+      return { kicker: `${String(i + 1).padStart(2, '0')} · ${kd.type} · ${kd.dom}`, titre: a.titre, schema: a.schema || '',
+        meta: [a.surface, fmtSeq(seqOf(a))].filter(Boolean).join(' · '), on: e.keep[i],
+        first: i === 0, last: i === e.ateliers.length - 1,
+        toggle: () => this.setState(s => ({ edit: { ...s.edit, keep: s.edit.keep.map((k, j) => j === i ? !k : k) } })),
+        up: () => this.moveAtelier(i, -1), down: () => this.moveAtelier(i, 1) };
+    });
+    const kept = e.ateliers.filter((_, i) => e.keep[i]);
+    const total = kept.reduce((m, a) => m + seqOf(a).total, 0);
+    return { date: e.date, theme: e.theme, rows,
+      summary: `${kept.length} atelier${kept.length > 1 ? 's' : ''} · ${total} min`,
+      canSave: kept.length > 0 && !!e.date,
+      onDate: ev => { const v = ev.target.value; this.setState(s => ({ edit: { ...s.edit, date: v } })); },
+      onTheme: ev => { const v = ev.target.value; this.setState(s => ({ edit: { ...s.edit, theme: v } })); },
+      save: () => this.saveEdit(), remove: () => this.deleteSession(e.sid),
+      cancel: () => this.setState(s => ({ edit: null, stack: s.stack.filter(x => x.v !== 'edit') })) };
   }
 
   listGroups() {
@@ -309,6 +372,7 @@ export default class App extends React.Component {
           {data && view === 'library' && this.renderLibrary(openPicker)}
           {data && view === 'atelier' && this.renderAtelier(this.atelierVals(top.sid, top.ai), goBack)}
           {data && view === 'import' && this.renderImport(this.importVals(), openPicker)}
+          {data && view === 'edit' && this.state.edit && this.renderEdit(this.editVals())}
         </div>
         <input type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" ref={this.fileRef} onChange={e => this.onFile(e)} style={{ display: 'none' }} />
         <nav className="tabbar">
@@ -436,6 +500,10 @@ export default class App extends React.Component {
             <I.Chevron />
           </div>
         )}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, paddingTop: 4 }}>
+          <button onClick={sv.edit} className="btn btn-secondary" style={editBtnS}>Modifier</button>
+          <button onClick={sv.remove} className="btn btn-danger" style={editBtnS}>Supprimer</button>
+        </div>
       </div>
     );
   }
@@ -547,6 +615,49 @@ export default class App extends React.Component {
           </div>
         ))}
         <button onClick={av.start} className="btn btn-primary blueprint" style={{ ...bigBtnS, marginTop: 6 }}><I.Corners /><I.Stopwatch />{av.startLabel}</button>
+      </div>
+    );
+  }
+
+  renderEdit(ev) {
+    const arrowS = { width: 36, height: 36, padding: 0, flex: 'none' };
+    return (
+      <div className="screen" style={{ gap: 20 }}>
+        <button onClick={ev.cancel} className="btn btn-ghost" style={ghostBtnS}><I.Back />Annuler</button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={kickerS}>Modifier</span>
+          <h1 style={{ margin: 0, fontSize: 40, lineHeight: 1, textTransform: 'uppercase' }}>Séance</h1>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14 }}>
+          <div className="field"><label htmlFor="ed-date">Date de la séance</label><input id="ed-date" className="input" type="date" value={ev.date} onChange={ev.onDate} style={{ height: 44 }} /></div>
+          <div className="field"><label htmlFor="ed-theme">Thème</label><input id="ed-theme" className="input" value={ev.theme} onChange={ev.onTheme} placeholder="ex. Créer et utiliser les espaces" style={{ height: 44 }} /></div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <h6 style={{ margin: '4px 0 0', color: 'var(--color-neutral-700)' }}>Ateliers · cocher / réordonner</h6>
+          {ev.rows.map((r, i) => (
+            <div key={i} className="blueprint" style={{ display: 'flex', gap: 10, padding: 10, alignItems: 'center', opacity: r.on ? 1 : .5 }}>
+              <I.Corners />
+              <div onClick={r.toggle} role="checkbox" aria-checked={r.on} className="hov7" style={{ flex: 1, minWidth: 0, display: 'flex', gap: 10, cursor: 'pointer' }}>
+                <div style={{ width: 22, height: 22, flex: 'none', marginTop: 2, border: `1.5px solid ${r.on ? 'var(--color-accent)' : 'var(--color-neutral-500)'}`, background: r.on ? 'var(--color-accent)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-bg)' }}>
+                  {r.on && <I.Check />}
+                </div>
+                {r.schema && <img src={r.schema} alt="" loading="lazy" style={{ width: 52, height: 52, objectFit: 'cover', flex: 'none', border: '1px solid var(--color-divider)' }} />}
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{ ...smallCapsS, color: 'var(--color-accent-700)' }}>{r.kicker}</span>
+                  <span style={{ font: '600 16px/1.08 var(--font-heading)', textTransform: 'uppercase', overflowWrap: 'anywhere' }}>{r.titre}</span>
+                  <span style={{ font: '400 12px/1.35 var(--font-body)', color: 'var(--color-neutral-700)' }}>{r.meta}</span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 'none' }}>
+                <button onClick={r.up} disabled={r.first} className="btn btn-secondary" style={arrowS} aria-label="Monter"><I.Up /></button>
+                <button onClick={r.down} disabled={r.last} className="btn btn-secondary" style={arrowS} aria-label="Descendre"><I.Down /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <span style={{ font: '400 13px/1.45 var(--font-body)', color: 'var(--color-neutral-700)' }}>{ev.summary}</span>
+        <button onClick={ev.save} disabled={!ev.canSave} className="btn btn-primary blueprint" style={bigBtnS}><I.Corners />Enregistrer</button>
+        <button onClick={ev.remove} className="btn btn-danger" style={editBtnS}>Supprimer la séance</button>
       </div>
     );
   }

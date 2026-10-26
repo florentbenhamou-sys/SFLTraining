@@ -3,6 +3,7 @@
   --gutter: 22px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --color-danger: #b3412f;
 }
 @media (max-width: 359px) { :root { --gutter: 16px; } }
 
@@ -48,3 +49,5 @@ button { -webkit-user-select: none; user-select: none; touch-action: manipulatio
 }
 .hov7:active, .hov6:active { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
 .play:active { background: var(--color-accent-700) !important; }
+.btn-danger { color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 45%, transparent); }
+.btn-danger:active { background: color-mix(in srgb, var(--color-danger) 10%, transparent); }
