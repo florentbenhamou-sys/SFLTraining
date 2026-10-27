@@ -1,10 +1,14 @@
 import React from 'react';
-import { cap, labelOf, todayISO, kind, seqOf, effOf, fmtSeq, mmss, dateParts, libKey } from './logic.js';
+import { cap, labelOf, todayISO, kind, seqOf, effOf, fmtSeq, fmtRest, mmss, dateParts, libKey } from './logic.js';
 import * as I from './Icons.jsx';
 
 // Timer settings (were design-time "Tweaks" in the prototype).
 const RECUP = 60;           // seconds of recovery between séquences
-const BEEP = true;          // beeps on the last 3 seconds and on phase changes
+const SETTINGS = 'training-sfl-settings';
+// End-of-chrono sound, chosen in the timer screen (bell button). Played with Web Audio, no files.
+const SOUNDS = [['none', 'Aucune'], ['bip', 'Bip'], ['double', 'Double bip'], ['carillon', 'Carillon'], ['sifflet', 'Sifflet'], ['gong', 'Gong']];
+const VOLUMES = [['Faible', 0.05], ['Moyen', 0.14], ['Fort', 0.32]];
+const DEFAULT_SETTINGS = { sound: 'double', countdown: true, volume: 1 };
 const LIVE_SCHEMA = true;   // show the field diagram during the timer
 const STORE = 'training-sfl-imports';
 // Local edits on top of seances.json + imports: { patches: { [id]: { date, label, theme, ateliers } }, deleted: [id] }
@@ -20,7 +24,7 @@ const bigBtnS = { height: 56, fontSize: 19, textTransform: 'uppercase', letterSp
 const liveIconBtnS = { width: 60, height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: '1px solid rgba(242,242,243,.25)', color: INK, cursor: 'pointer', padding: 0, flex: 'none' };
 
 export default class App extends React.Component {
-  state = { data: null, tab: 'today', stack: [], filter: 'Tous', q: '', live: null, imp: null, edit: null };
+  state = { data: null, tab: 'today', stack: [], filter: 'Tous', q: '', live: null, imp: null, edit: null, chrono: null, settings: DEFAULT_SETTINGS, soundPanel: false };
   scrollRef = React.createRef();
   fileRef = React.createRef();
   today = todayISO();
@@ -33,6 +37,7 @@ export default class App extends React.Component {
       const all = [...data, ...extra].filter(s => !ed.deleted.includes(s.id)).map(s => ed.patches[s.id] ? { ...s, ...ed.patches[s.id] } : s);
       this.setState({ data: all.sort((a, b) => a.date.localeCompare(b.date)) });
     });
+    try { this.setState({ settings: { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS) || '{}') } }); } catch (e) {}
     this.timer = setInterval(() => this.tick(), 250);
     this.onVis = () => { if (document.visibilityState === 'visible') { this.today = todayISO(); this.syncWakeLock(); } };
     document.addEventListener('visibilitychange', this.onVis);
@@ -41,7 +46,7 @@ export default class App extends React.Component {
   componentWillUnmount() { clearInterval(this.timer); document.removeEventListener('visibilitychange', this.onVis); }
   componentDidUpdate(_, prev) {
     const s = this.state, k = s.tab + JSON.stringify(s.stack[s.stack.length - 1] || null) + !!s.live;
-    if (k !== this._navKey) { this._navKey = k; if (this.scrollRef.current) this.scrollRef.current.scrollTop = 0; }
+    if (k !== this._navKey) { this._navKey = k; if (this.scrollRef.current) this.scrollRef.current.scrollTop = 0; if (s.chrono) this.setState({ chrono: null }); }
     if (!!prev.live !== !!s.live) this.syncChrome();
     if ((prev.live && prev.live.running) !== (s.live && s.live.running)) this.syncWakeLock();
   }
@@ -63,14 +68,44 @@ export default class App extends React.Component {
     } catch (e) { this.wake = null; }
   }
 
-  beep(f = 880, d = 0.12) {
-    if (!BEEP) return;
+  // ── sounds ──
+  audio() {
+    this.ac = this.ac || new (window.AudioContext || window.webkitAudioContext)();
+    if (this.ac.state === 'suspended') this.ac.resume();
+    return this.ac;
+  }
+  // One note: f Hz, starting `at` s from now, lasting d s; `ring` = struck sound that fades out.
+  tone(f, at, d, { type = 'sine', ring = false, gain = 1 } = {}) {
+    const ac = this.audio(), o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime + at;
+    const v = VOLUMES[this.state.settings.volume][1] * gain;
+    o.type = type; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.01);
+    if (!ring) g.gain.setValueAtTime(v, t + Math.max(0.02, d - 0.03));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(g); g.connect(ac.destination); o.start(t); o.stop(t + d + 0.05);
+    return o;
+  }
+  playSound(id = this.state.settings.sound) {
     try {
-      this.ac = this.ac || new (window.AudioContext || window.webkitAudioContext)();
-      if (this.ac.state === 'suspended') this.ac.resume();
-      const o = this.ac.createOscillator(), g = this.ac.createGain();
-      o.frequency.value = f; g.gain.value = 0.08; o.connect(g); g.connect(this.ac.destination); o.start(); o.stop(this.ac.currentTime + d);
+      if (id === 'bip') this.tone(880, 0, 0.3);
+      else if (id === 'double') { this.tone(988, 0, 0.14); this.tone(988, 0.2, 0.14); }
+      else if (id === 'carillon') { [784, 988, 1175].forEach((f, i) => this.tone(f, i * 0.16, 0.7, { ring: true })); }
+      else if (id === 'sifflet') {
+        const ac = this.audio(), o = this.tone(2700, 0, 0.7, { gain: 0.6 }), lfo = ac.createOscillator(), lg = ac.createGain();
+        lfo.frequency.value = 28; lg.gain.value = 180; lfo.connect(lg); lg.connect(o.frequency); lfo.start(); lfo.stop(ac.currentTime + 0.75);
+      }
+      else if (id === 'gong') { this.tone(196, 0, 2.2, { ring: true, gain: 1.4 }); this.tone(392, 0, 1.6, { ring: true, gain: 0.5 }); this.tone(587, 0, 1, { ring: true, gain: 0.25 }); }
     } catch (e) {}
+  }
+  // Short tick for the 3-2-1 countdown.
+  beep() { if (this.state.settings.countdown) { try { this.tone(660, 0, 0.09, { gain: 0.6 }); } catch (e) {} } }
+  setSettings(patch, then) {
+    this.setState(s => {
+      const settings = { ...s.settings, ...patch };
+      try { localStorage.setItem(SETTINGS, JSON.stringify(settings)); } catch (e) {}
+      return { settings };
+    }, then);
   }
   session(id) { return this.state.data.find(s => s.id === id); }
   // "Aujourd'hui" = today's session, else the next one, else the latest.
@@ -145,20 +180,49 @@ export default class App extends React.Component {
     this.setState(s => ({ data: s.data.filter(x => x.id !== sid), edit: null, tab: 'list', stack: [] }));
   }
 
+  // ── chronos of one atelier ──
+  updateAtelier(sid, ai, atelier) {
+    const S = this.session(sid), ateliers = S.ateliers.map((x, i) => i === ai ? atelier : x);
+    const ed = this.loadEdits();
+    ed.patches[sid] = { ...(ed.patches[sid] || {}), date: S.date, label: S.label, theme: S.theme, ateliers };
+    this.saveEdits(ed);
+    this.setState(s => ({ data: s.data.map(x => x.id === sid ? { ...x, ateliers } : x), chrono: null }));
+  }
+  openChrono(sid, ai) {
+    const a = this.session(sid).ateliers[ai], sq = seqOf(a);
+    this.setState({ chrono: { sid, ai, n: String(sq.n), min: String(Math.floor(sq.work / 60)), sec: String(sq.work % 60), rest: String(this.restFor(sq)) } });
+  }
+  chronoParsed() {
+    const c = this.state.chrono, int = v => { const x = parseInt(v, 10); return Number.isFinite(x) && x >= 0 ? x : NaN; };
+    const n = int(c.n), work = int(c.min || '0') * 60 + int(c.sec || '0'), rest = int(c.rest || '0');
+    return { n, work, rest, ok: n >= 1 && n <= 99 && work >= 5 && rest >= 0 };
+  }
+  saveChrono() {
+    const c = this.state.chrono, v = this.chronoParsed();
+    if (!v.ok) return;
+    const a = this.session(c.sid).ateliers[c.ai];
+    this.updateAtelier(c.sid, c.ai, { ...a, chrono: { n: v.n, work: v.work, rest: v.n > 1 ? v.rest : 0 } });
+  }
+  resetChrono(sid, ai) {
+    const { chrono, ...a } = this.session(sid).ateliers[ai];
+    this.updateAtelier(sid, ai, a);
+  }
+
   // ── live timer ──
   startLive(sid, ai = 0) {
     const sq = seqOf(this.session(sid).ateliers[ai]);
     this.setState({ live: { sid, ai, k: 0, phase: 'work', left: sq.work, running: false, elapsed: 0, done: [], finished: false } });
   }
-  restFor(sq) { return sq.ift ? sq.rest : RECUP; }
+  restFor(sq) { return sq.rest != null ? sq.rest : RECUP; }
   advance(l, sound = true) {
-    const bp = sound ? (f, d) => this.beep(f, d) : () => {};
+    // Every chrono that runs out (work, recovery, end of atelier) rings the chosen sound.
+    if (sound) this.playSound();
     const S = this.session(l.sid), sq = seqOf(S.ateliers[l.ai]), rest = this.restFor(sq);
-    if (l.phase === 'work' && l.k < sq.n - 1 && rest > 0) { bp(520, .35); return { ...l, phase: 'rest', left: rest }; }
-    if (l.k < sq.n - 1) { bp(880, .35); return { ...l, k: l.k + 1, phase: 'work', left: sq.work }; }
+    if (l.phase === 'work' && l.k < sq.n - 1 && rest > 0) return { ...l, phase: 'rest', left: rest };
+    if (l.k < sq.n - 1) return { ...l, k: l.k + 1, phase: 'work', left: sq.work };
     const done = l.done.includes(l.ai) ? l.done : [...l.done, l.ai];
-    if (l.ai < S.ateliers.length - 1) { bp(660, .5); const n = seqOf(S.ateliers[l.ai + 1]); return { ...l, ai: l.ai + 1, k: 0, phase: 'work', left: n.work, running: false, done }; }
-    bp(660, .8); return { ...l, running: false, finished: true, done };
+    if (l.ai < S.ateliers.length - 1) { const n = seqOf(S.ateliers[l.ai + 1]); return { ...l, ai: l.ai + 1, k: 0, phase: 'work', left: n.work, running: false, done }; }
+    return { ...l, running: false, finished: true, done };
   }
   // Wall-clock driven so the countdown stays right even if iOS throttles timers.
   tick() {
@@ -176,7 +240,7 @@ export default class App extends React.Component {
     this.setState({ live: l });
   }
   togglePlay() {
-    this.beep(1, .001); // unlocks audio on iOS (needs a user gesture)
+    try { this.tone(1, 0, 0.02, { gain: 0.001 }); } catch (e) {} // unlocks audio on iOS (needs a user gesture)
     this.lastT = Date.now();
     this.setState(s => ({ live: { ...s.live, running: !s.live.running } }));
   }
@@ -263,14 +327,27 @@ export default class App extends React.Component {
       src: `Atelier ${ai + 1} / ${S.ateliers.length} · ${S.label}`,
       backLabel: prev ? (prev.v === 'seance' ? S.label : 'Retour') : this.state.tab === 'library' ? 'Exercices' : this.state.tab === 'list' ? 'Séances' : 'Aujourd’hui',
       specs: [
-        { k: 'Surface', v: a.surface || '—', col: 'auto' }, { k: 'Temps total', v: a.total || '—', col: 'auto' },
-        { k: 'Séquences', v: a.sequences || fmtSeq(sq), col: '1 / -1' },
+        { k: 'Surface', v: a.surface || '—', col: 'auto' }, { k: 'Temps total', v: sq.custom ? `${sq.total} minutes` : a.total || '—', col: 'auto' },
+        { k: 'Séquences', v: sq.custom ? fmtSeq(sq) : a.sequences || fmtSeq(sq), col: '1 / -1',
+          sub: sq.custom ? `${sq.n > 1 ? fmtRest(sq.rest) + ' · ' : ''}Chronos modifiés` : sq.n > 1 ? fmtRest(this.restFor(sq)) : '' },
         { k: 'Effectif', v: eff.lines.join(' · ') || '—', col: '1 / -1', sub: eff.total },
       ],
       sections,
       startLabel: `Lancer le minuteur · ${fmtSeq(sq)}`,
       start: () => this.startLive(sid, ai),
+      custom: !!sq.custom,
+      editChrono: () => this.openChrono(sid, ai), resetChrono: () => this.resetChrono(sid, ai),
+      chrono: this.state.chrono && this.state.chrono.sid === sid && this.state.chrono.ai === ai ? this.chronoVals() : null,
     };
+  }
+
+  chronoVals() {
+    const c = this.state.chrono, v = this.chronoParsed();
+    const set = k => e => { const x = e.target.value; this.setState(s => ({ chrono: { ...s.chrono, [k]: x } })); };
+    return { ...c, ok: v.ok, multi: v.n > 1,
+      summary: v.ok ? `${v.n} × ${mmss(v.work)}${v.n > 1 ? ` · ${v.rest} s de récup` : ''} · ${Math.ceil((v.n * v.work + (v.n > 1 ? (v.n - 1) * v.rest : 0)) / 60)} min au total` : 'Au moins 1 répétition de 5 secondes.',
+      onN: set('n'), onMin: set('min'), onSec: set('sec'), onRest: set('rest'),
+      save: () => this.saveChrono(), cancel: () => this.setState({ chrono: null }) };
   }
 
   importVals() {
@@ -388,14 +465,18 @@ export default class App extends React.Component {
   }
 
   renderLive() {
-    const lv = this.liveVals(), close = () => this.setState({ live: null });
+    const lv = this.liveVals(), close = () => this.setState({ live: null, soundPanel: false });
     const faint = 'rgba(242,242,243,.55)';
     return (
       <div className="live">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ ...kickerS, color: 'var(--color-accent-400)' }}>{lv.pos}</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => this.setState(s => ({ soundPanel: !s.soundPanel }))} aria-label="Sonnerie" aria-expanded={this.state.soundPanel} style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: this.state.soundPanel ? 'rgba(242,242,243,.14)' : 'transparent', border: '1px solid rgba(242,242,243,.25)', color: INK, cursor: 'pointer', padding: 0 }}>{this.state.settings.sound === 'none' ? <I.BellOff /> : <I.Bell />}</button>
           <button onClick={close} aria-label="Fermer" style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: '1px solid rgba(242,242,243,.25)', color: INK, cursor: 'pointer', padding: 0 }}><I.Close /></button>
+          </div>
         </div>
+        {this.state.soundPanel && this.renderSoundPanel()}
 
         {lv.finished ? (<>
           <div className="live-body" style={{ gap: 22 }}>
@@ -445,10 +526,36 @@ export default class App extends React.Component {
             <div style={{ display: 'flex', gap: 10 }}>
               <button onClick={() => this.prev()} aria-label="Précédent" style={liveIconBtnS}><I.Prev /></button>
               <button className="play" onClick={() => this.togglePlay()} style={{ flex: 1, height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: 'var(--color-accent)', border: '1px solid var(--color-accent)', color: INK, font: '600 20px var(--font-heading)', textTransform: 'uppercase', letterSpacing: '.06em', cursor: 'pointer' }}>{lv.playLabel}</button>
-              <button onClick={() => { this.lastT = Date.now(); this.setState(s => ({ live: this.advance({ ...s.live }) })); }} aria-label="Suivant" style={liveIconBtnS}><I.Next /></button>
+              <button onClick={() => { this.lastT = Date.now(); this.setState(s => ({ live: this.advance({ ...s.live }, false) })); }} aria-label="Suivant" style={liveIconBtnS}><I.Next /></button>
             </div>
           </div>
         </>)}
+      </div>
+    );
+  }
+
+  renderSoundPanel() {
+    const st = this.state.settings;
+    const chip = (on, label, onClick, key) => (
+      <button key={key} onClick={onClick} aria-pressed={on} style={{ height: 40, padding: '0 12px', border: `1px solid ${on ? 'var(--color-accent-400)' : 'rgba(242,242,243,.25)'}`, background: on ? 'var(--color-accent-400)' : 'transparent', color: on ? 'var(--color-accent-900)' : INK, font: '600 14px var(--font-heading)', letterSpacing: '.04em', textTransform: 'uppercase', cursor: 'pointer' }}>{label}</button>
+    );
+    const lbl = { ...smallCapsS, letterSpacing: '.12em', color: 'rgba(242,242,243,.6)' };
+    return (
+      <div className="blueprint" style={{ borderColor: 'rgba(242,242,243,.22)', padding: 14, display: 'flex', flexDirection: 'column', gap: 12, flex: 'none' }}>
+        <I.Corners color="rgba(242,242,243,.55)" />
+        <span style={lbl}>Sonnerie de fin de chrono</span>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {SOUNDS.map(([id, label]) => chip(st.sound === id, label, () => this.setSettings({ sound: id }, () => this.playSound()), id))}
+        </div>
+        <span style={lbl}>Volume</span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {VOLUMES.map(([label], i) => chip(st.volume === i, label, () => this.setSettings({ volume: i }, () => this.playSound()), label))}
+        </div>
+        <button onClick={() => this.setSettings({ countdown: !st.countdown })} role="switch" aria-checked={st.countdown} style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 40, background: 'transparent', border: 0, color: INK, padding: 0, cursor: 'pointer', font: '400 15px var(--font-body)', textAlign: 'left' }}>
+          <span style={{ width: 22, height: 22, flex: 'none', border: `1.5px solid ${st.countdown ? 'var(--color-accent-400)' : 'rgba(242,242,243,.4)'}`, background: st.countdown ? 'var(--color-accent-400)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-accent-900)' }}>{st.countdown && <I.Check />}</span>
+          Petits bips 3-2-1 avant la fin
+        </button>
+        <span style={{ font: '400 12px/1.4 var(--font-body)', color: 'rgba(242,242,243,.55)' }}>Sur iPhone, le son est coupé si le bouton silencieux est activé.</span>
       </div>
     );
   }
@@ -604,6 +711,12 @@ export default class App extends React.Component {
             </div>
           ))}
         </div>
+        {av.chrono ? this.renderChrono(av.chrono) : (
+          <div style={{ display: 'grid', gridTemplateColumns: av.custom ? '1fr 1fr' : '1fr', gap: 10, marginTop: -8 }}>
+            <button onClick={av.editChrono} className="btn btn-secondary" style={editBtnS}><I.Stopwatch />Modifier les chronos</button>
+            {av.custom && <button onClick={av.resetChrono} className="btn btn-secondary" style={editBtnS}>Valeurs d’origine</button>}
+          </div>
+        )}
         {av.sections.map(sec => (
           <div key={sec.title} style={{ display: 'flex', flexDirection: 'column' }}>
             <h6 style={{ margin: '0 0 4px', color: 'var(--color-accent-700)' }}>{sec.title}</h6>
@@ -658,6 +771,35 @@ export default class App extends React.Component {
         <span style={{ font: '400 13px/1.45 var(--font-body)', color: 'var(--color-neutral-700)' }}>{ev.summary}</span>
         <button onClick={ev.save} disabled={!ev.canSave} className="btn btn-primary blueprint" style={bigBtnS}><I.Corners />Enregistrer</button>
         <button onClick={ev.remove} className="btn btn-danger" style={editBtnS}>Supprimer la séance</button>
+      </div>
+    );
+  }
+
+  renderChrono(cv) {
+    const num = (id, label, value, onChange, unit) => (
+      <div className="field" style={{ minWidth: 0 }}>
+        <label htmlFor={id}>{label}</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input id={id} className="input" type="number" inputMode="numeric" min={0} value={value} onChange={onChange} style={{ height: 44, width: '100%', minWidth: 0 }} />
+          {unit && <span style={{ font: '400 14px var(--font-body)', color: 'var(--color-neutral-700)', flex: 'none' }}>{unit}</span>}
+        </div>
+      </div>
+    );
+    return (
+      <div className="blueprint" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <I.Corners />
+        <span style={{ font: '600 18px var(--font-heading)', textTransform: 'uppercase' }}>Chronos de l’exercice</span>
+        {num('ch-n', 'Répétitions', cv.n, cv.onN)}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {num('ch-min', 'Durée · minutes', cv.min, cv.onMin, 'min')}
+          {num('ch-sec', 'secondes', cv.sec, cv.onSec, 's')}
+        </div>
+        {cv.multi && num('ch-rest', 'Récupération entre répétitions', cv.rest, cv.onRest, 's')}
+        <span style={{ font: '400 13px/1.45 var(--font-body)', color: cv.ok ? 'var(--color-neutral-700)' : 'var(--color-danger)' }}>{cv.summary}</span>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <button onClick={cv.cancel} className="btn btn-secondary" style={editBtnS}>Annuler</button>
+          <button onClick={cv.save} disabled={!cv.ok} className="btn btn-primary" style={editBtnS}>Enregistrer</button>
+        </div>
       </div>
     );
   }

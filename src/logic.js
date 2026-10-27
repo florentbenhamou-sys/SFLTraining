@@ -26,7 +26,12 @@ export function kind(a) {
   return { type, dom };
 }
 
+// a.chrono = { n, work, rest } (seconds) : timings set by hand, they replace the ones read from the slide.
 export function seqOf(a) {
+  if (a.chrono) {
+    const { n, work, rest } = a.chrono;
+    return { ift: (a.type || '').includes('30-15'), n, work, rest, total: Math.ceil((n * work + (n - 1) * rest) / 60), custom: true };
+  }
   const total = parseInt(a.total) || 15;
   if ((a.type || '').includes('30-15')) return { ift: true, n: 24, work: 30, rest: 15, total };
   const m = (a.sequences || '').match(/(\d+)\s*séquences?\s*de\s*(\d+)\s*(minutes?|manches?)\s*(\d+)?/);
@@ -55,7 +60,9 @@ export function effOf(a) {
   return { lines, total: exact && lines.length > 1 ? `${total} joueurs au total` : '', short };
 }
 
-export const fmtSeq = s => s.ift ? '30″ / 15″' : s.n > 1 ? `${s.n} × ${s.work % 60 ? Math.floor(s.work / 60) + '′' + (s.work % 60) : s.work / 60 + ' min'}` : `${Math.round(s.work / 60)} min`;
+const fmtDur = x => x % 60 ? (x >= 60 ? Math.floor(x / 60) + '′' : '') + (x % 60) + '″' : x / 60 + ' min';
+export const fmtRest = x => x ? `${fmtDur(x)} de récup` : 'sans récup';
+export const fmtSeq = s => s.ift ? `${s.work}″ / ${s.rest}″` : s.custom ? (s.n > 1 ? `${s.n} × ${fmtDur(s.work)}` : fmtDur(s.work)) : s.n > 1 ? `${s.n} × ${s.work % 60 ? Math.floor(s.work / 60) + '′' + (s.work % 60) : s.work / 60 + ' min'}` : `${Math.round(s.work / 60)} min`;
 export const mmss = x => { x = Math.max(0, x); return String(Math.floor(x / 60)).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0'); };
 export const dateParts = iso => { const d = new Date(iso + 'T12:00:00'); return { dow: DOW[d.getDay()], day: d.getDate(), mois: MOIS[d.getMonth()] }; };
 export const libKey = a => (a.titre + '|' + (a.regles[0] || a.comportements[0] || '')).toLowerCase();

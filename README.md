@@ -23,4 +23,5 @@ npm run preview   # sert dist/ pour tester la PWA
 - `public/seances.json` : séances d'origine. Les schémas sont dans `public/schemas/`.
 - Les séances importées depuis un `.pptx` sont gardées dans le stockage local du téléphone (clé `training-sfl-imports`).
 - Chaque séance peut être modifiée (date, thème, ateliers retirés ou réordonnés) ou supprimée depuis son écran. Ces changements sont gardés sur le téléphone (clé `training-sfl-edits`) ; `seances.json` reste intact.
-- Les réglages du minuteur sont en haut de `src/App.jsx` : récupération 60 s, bips, schéma affiché.
+- Chronos d'un exercice : sur la fiche de l'exercice, « Modifier les chronos » (répétitions, durée, récupération). « Valeurs d'origine » revient au calcul automatique.
+- Sonnerie de fin de chrono : bouton cloche dans l'écran du minuteur (son, volume, bips 3-2-1). Réglage gardé sur le téléphone (clé `training-sfl-settings`).
