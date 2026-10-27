@@ -434,7 +434,7 @@ export default class App extends React.Component {
             <span className="clock" role="timer" aria-live="off">{lv.clock}</span>
             <div style={{ height: 2, background: 'rgba(242,242,243,.15)' }}><div style={{ height: 2, width: lv.pct, background: lv.phaseColor, transition: 'width 1s linear' }} /></div>
           </div>
-          {lv.showSchema && <img className="live-schema" src={lv.schema} alt="Schéma de l'atelier" style={{ width: '100%', height: 120, objectFit: 'cover', border: '1px solid rgba(242,242,243,.22)', display: 'block', flex: 'none' }} />}
+          {lv.showSchema && <img className="live-schema" src={lv.schema} alt="Schéma de l'atelier" style={{ width: '100%', height: 'auto', maxHeight: '40dvh', objectFit: 'contain', border: '1px solid rgba(242,242,243,.22)', display: 'block', flex: 'none' }} />}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minHeight: 0, overflow: 'hidden', flex: 'none' }}>
             <span style={{ ...smallCapsS, letterSpacing: '.12em', color: faint, marginBottom: 4 }}>Consignes</span>
             {lv.consignes.map((c, i) => <div key={i} style={{ display: 'flex', gap: 10, padding: '7px 0 7px 10px', borderLeft: `2px solid ${c.line}`, font: `${c.weight} 14px/1.35 var(--font-body)`, color: c.color }}>{c.t}</div>)}
