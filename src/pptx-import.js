@@ -84,6 +84,24 @@ function zonesOf(shapes) {
 
 const blobToDataURL = b => new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
 
+// Diagrams are often huge PNGs (up to ~1 MB). Re-encode as JPEG, at most 1400 px wide, so a
+// session stays a few hundred KB on the phone; keep the original if that is not smaller.
+async function compressImage(blob) {
+  const orig = await blobToDataURL(blob);
+  try {
+    const url = URL.createObjectURL(blob);
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    URL.revokeObjectURL(url);
+    const k = Math.min(1, 1400 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    const g = c.getContext('2d');
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+    const jpg = c.toDataURL('image/jpeg', 0.85);
+    return jpg.length < orig.length ? jpg : orig;
+  } catch (e) { return orig; }
+}
+
 export async function parsePptx(file) {
   const JSZip = (await import('jszip')).default;
   const zip = await JSZip.loadAsync(file);
@@ -105,7 +123,7 @@ export async function parsePptx(file) {
     const cand = rels[n].filter(f => use[f] < slides.length || slides.length === 1).filter(f => /\.(png|jpe?g|gif)$/i.test(f));
     let best = null, bs = 0;
     for (const f of cand) { const sz = (await zip.file('ppt/media/' + f).async('uint8array')).length; if (sz > bs) { bs = sz; best = f; } }
-    if (best) a.schema = await blobToDataURL(await zip.file('ppt/media/' + best).async('blob'));
+    if (best) a.schema = await compressImage(await zip.file('ppt/media/' + best).async('blob'));
     ateliers.push(a);
   }
   const base = file.name.replace(/\.pptx?$/i, '').replace(/\(\d+\)/g, '');

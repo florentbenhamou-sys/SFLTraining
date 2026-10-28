@@ -1,6 +1,7 @@
 import React from 'react';
 import { cap, labelOf, todayISO, kind, seqOf, effOf, fmtSeq, fmtRest, mmss, dateParts, libKey } from './logic.js';
 import * as I from './Icons.jsx';
+import { loadKey, kvSet, askPersist } from './storage.js';
 
 // Timer settings (were design-time "Tweaks" in the prototype).
 const RECUP = 60;           // seconds of recovery between séquences
@@ -31,9 +32,11 @@ export default class App extends React.Component {
 
   // ── lifecycle ──
   componentDidMount() {
-    fetch('seances.json').then(r => r.json()).then(data => {
-      let extra = []; try { extra = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch (e) {}
-      const ed = this.loadEdits();
+    askPersist();
+    Promise.all([fetch('seances.json').then(r => r.json()), loadKey(STORE, []), loadKey(EDITS, {})]).then(([data, imports, edits]) => {
+      this.imports = Array.isArray(imports) ? imports : [];
+      this.edits = { patches: (edits && edits.patches) || {}, deleted: (edits && edits.deleted) || [] };
+      const extra = this.imports, ed = this.edits;
       const all = [...data, ...extra].filter(s => !ed.deleted.includes(s.id)).map(s => ed.patches[s.id] ? { ...s, ...ed.patches[s.id] } : s);
       this.setState({ data: all.sort((a, b) => a.date.localeCompare(b.date)) });
     });
@@ -140,16 +143,29 @@ export default class App extends React.Component {
     let id = im.date; while (data.some(s => s.id === id) || deleted.includes(id)) id += 'b';
     const S = { id, date: im.date, label: labelOf(im.date), theme: im.theme || 'Nouvelle séance', ateliers, imported: true };
     const next = [...data, S].sort((a, b) => a.date.localeCompare(b.date));
-    try { const prev = JSON.parse(localStorage.getItem(STORE) || '[]'); localStorage.setItem(STORE, JSON.stringify([...prev, S])); } catch (e) {}
+    this.imports = [...this.imports, S]; this.persist(STORE, this.imports);
     this.setState({ data: next, imp: null, tab: 'list', stack: [{ v: 'seance', sid: id }] });
   }
 
   // ── edit / delete ──
-  loadEdits() {
-    try { const e = JSON.parse(localStorage.getItem(EDITS) || '{}'); return { patches: e.patches || {}, deleted: e.deleted || [] }; }
-    catch (e) { return { patches: {}, deleted: [] }; }
+  // In-memory copies, loaded at start and written back to IndexedDB on every change.
+  imports = [];
+  edits = { patches: {}, deleted: [] };
+  loadEdits() { return { patches: { ...this.edits.patches }, deleted: [...this.edits.deleted] }; }
+  saveEdits(e) { this.edits = e; this.persist(EDITS, e); }
+  persist(key, value) {
+    kvSet(key, value).catch(err => {
+      console.error(err);
+      window.alert('Enregistrement impossible sur ce téléphone (espace de stockage plein ?). La modification sera perdue à la fermeture de l’app.');
+    });
   }
-  saveEdits(e) { try { localStorage.setItem(EDITS, JSON.stringify(e)); } catch (err) {} }
+  // Saves changed fields of a session: an imported session is rewritten in place, a built-in one
+  // gets a patch over seances.json (its diagrams are file paths, so the patch stays small).
+  saveSessionPatch(sid, patch) {
+    const i = this.imports.findIndex(x => x.id === sid);
+    if (i >= 0) { this.imports = this.imports.map((x, j) => j === i ? { ...x, ...patch } : x); this.persist(STORE, this.imports); return; }
+    const ed = this.loadEdits(); ed.patches[sid] = { ...(ed.patches[sid] || {}), ...patch }; this.saveEdits(ed);
+  }
   openEdit(sid) {
     const S = this.session(sid);
     this.setState(s => ({ edit: { sid, date: S.date, theme: S.theme, ateliers: S.ateliers, keep: S.ateliers.map(() => true) }, stack: [...s.stack, { v: 'edit', sid }] }));
@@ -166,7 +182,7 @@ export default class App extends React.Component {
     const e = this.state.edit, ateliers = e.ateliers.filter((_, i) => e.keep[i]);
     if (!ateliers.length || !e.date) return;
     const patch = { date: e.date, label: labelOf(e.date), theme: e.theme.trim() || 'Séance', ateliers };
-    const ed = this.loadEdits(); ed.patches[e.sid] = patch; this.saveEdits(ed);
+    this.saveSessionPatch(e.sid, patch);
     this.setState(s => ({
       data: s.data.map(x => x.id === e.sid ? { ...x, ...patch } : x).sort((a, b) => a.date.localeCompare(b.date)),
       edit: null, stack: s.stack.filter(x => x.v !== 'edit'),
@@ -176,16 +192,14 @@ export default class App extends React.Component {
     const S = this.session(sid);
     if (!S || !window.confirm(`Supprimer la séance « ${S.label} · ${S.theme} » ?\nCette action est définitive sur ce téléphone.`)) return;
     const ed = this.loadEdits(); delete ed.patches[sid]; if (!ed.deleted.includes(sid)) ed.deleted.push(sid); this.saveEdits(ed);
-    try { const imp = JSON.parse(localStorage.getItem(STORE) || '[]'); localStorage.setItem(STORE, JSON.stringify(imp.filter(x => x.id !== sid))); } catch (e) {}
+    if (this.imports.some(x => x.id === sid)) { this.imports = this.imports.filter(x => x.id !== sid); this.persist(STORE, this.imports); }
     this.setState(s => ({ data: s.data.filter(x => x.id !== sid), edit: null, tab: 'list', stack: [] }));
   }
 
   // ── chronos of one atelier ──
   updateAtelier(sid, ai, atelier) {
     const S = this.session(sid), ateliers = S.ateliers.map((x, i) => i === ai ? atelier : x);
-    const ed = this.loadEdits();
-    ed.patches[sid] = { ...(ed.patches[sid] || {}), date: S.date, label: S.label, theme: S.theme, ateliers };
-    this.saveEdits(ed);
+    this.saveSessionPatch(sid, { ateliers });
     this.setState(s => ({ data: s.data.map(x => x.id === sid ? { ...x, ateliers } : x), chrono: null }));
   }
   openChrono(sid, ai) {
